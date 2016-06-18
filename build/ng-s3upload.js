@@ -4,21 +4,10 @@
 // and are loaded in the correct order to satisfy dependency injection
 // before all nested files are concatenated by Grunt
 
-// Config
-angular.module('ngS3upload.config', []).
-  value('ngS3upload.config', {
-      debug: true
-  }).
-  config(['$compileProvider', function($compileProvider){
-    if (angular.isDefined($compileProvider.urlSanitizationWhitelist)) {
-      $compileProvider.urlSanitizationWhitelist(/^\s*(https?|ftp|mailto|file|data):/);
-    } else {
-      $compileProvider.aHrefSanitizationWhitelist(/^\s*(https?|ftp|mailto|file|data):/);
-    }
-  }]);
-
 // Modules
+angular.module('ngS3upload.config', []);
 angular.module('ngS3upload.directives', []);
+angular.module('ngS3upload.services', []);
 angular.module('ngS3upload',
     [
         'ngS3upload.config',
@@ -26,10 +15,19 @@ angular.module('ngS3upload',
         'ngS3upload.services',
         'ngSanitize'
     ]);
-angular.module('ngS3upload.config', []).
+angular.module('ngS3upload.config').
   constant('ngS3Config', {
     theme: 'bootstrap2'
-  });angular.module('ngS3upload.services', []).
+  }).
+  value('ngS3UploadConfig', {}).
+  config(['$compileProvider', function($compileProvider){
+    if (angular.isDefined($compileProvider.urlSanitizationWhitelist)) {
+      $compileProvider.urlSanitizationWhitelist(/^\s*(https?|ftp|mailto|file|data):/);
+    } else {
+      $compileProvider.aHrefSanitizationWhitelist(/^\s*(https?|ftp|mailto|file|data):/);
+    }
+  }]);
+angular.module('ngS3upload.services').
   service('S3Uploader', ['$http', '$q', '$window', function ($http, $q, $window) {
     this.uploads = 0;
     var self = this;
@@ -63,6 +61,7 @@ angular.module('ngS3upload.config', []).
       fd.append('key', key);
       fd.append('acl', acl);
       fd.append('Content-Type', file.type);
+      fd.append('Content-Length', '1');
       fd.append('AWSAccessKeyId', accessKey);
       fd.append('policy', policy);
       fd.append('signature', signature);
@@ -141,8 +140,8 @@ angular.module('ngS3upload.config', []).
       return this.uploads > 0;
     };
   }]);
-angular.module('ngS3upload.directives', []).
-  directive('s3Upload', ['$parse', 'S3Uploader', 'ngS3Config', function ($parse, S3Uploader, ngS3Config) {
+angular.module('ngS3upload.directives').
+  directive('s3Upload', ['$parse', 'S3Uploader', 'ngS3Config', 'ngS3UploadConfig', function ($parse, S3Uploader, ngS3Config, ngS3UploadConfig) {
     return {
       restrict: 'AC',
       require: '?ngModel',
@@ -154,10 +153,8 @@ angular.module('ngS3upload.directives', []).
         $scope.success = false;
         $scope.uploading = false;
 
-        $scope.barClass = function () {
-          return {
-            "bar-success": $scope.attempt && !$scope.uploading && $scope.success
-          };
+        $scope.isUploadSuccessful = function(){
+          return $scope.attempt && !$scope.uploading && $scope.success;
         };
       }],
       compile: function (element, attr, linker) {
@@ -173,12 +170,13 @@ angular.module('ngS3upload.directives', []).
             opts = angular.extend({
               submitOnChange: true,
               getOptionsUri: '/getS3Options',
+              getManualOptions: null,
               acl: 'public-read',
               uploadingKey: 'uploading',
               folder: '',
               enableValidation: true,
               targetFilename: null
-            }, opts);
+            }, ngS3UploadConfig, opts);
             var bucket = scope.$eval(attrs.bucket);
 
             // Bind the button click event
@@ -198,7 +196,17 @@ angular.module('ngS3upload.directives', []).
               var filename = selectedFile.name;
               var ext = filename.split('.').pop();
 
-              S3Uploader.getUploadOptions(opts.getOptionsUri).then(function (s3Options) {
+              if(angular.isObject(opts.getManualOptions)) {
+                _upload(opts.getManualOptions);
+              } else {
+                S3Uploader.getUploadOptions(opts.getOptionsUri).then(function (s3Options) {
+                  _upload(s3Options);
+                }, function (error) {
+                  throw Error("Can't receive the needed options for S3 " + error);
+                });
+              }
+
+              function _upload(s3Options){
                 if (opts.enableValidation) {
                   ngModel.$setValidity('uploading', false);
                 }
@@ -230,11 +238,7 @@ angular.module('ngS3upload.directives', []).
                       ngModel.$setValidity('succeeded', false);
                     }
                   });
-
-              }, function (error) {
-                throw Error("Can't receive the needed options for S3 " + error);
-              });
-
+              }
             };
 
             element.bind('change', function (nVal) {
@@ -255,7 +259,12 @@ angular.module('ngS3upload.directives', []).
       },
       templateUrl: function(elm, attrs) {
         var theme = attrs.theme || ngS3Config.theme;
-        return 'theme/' + theme + '.html';
+
+        if(theme.indexOf('/') === -1){
+          return 'theme/' + theme + '.html';
+        } else {
+          return theme;
+        }
       }
     };
   }]);
@@ -264,27 +273,33 @@ angular.module('ngS3upload').run(['$templateCache', function($templateCache) {
 
   $templateCache.put('theme/bootstrap2.html',
     "<div class=\"upload-wrap\">\n" +
-    "  <button class=\"btn btn-primary\" type=\"button\"><span ng-if=\"!filename\">Choose file</span><span ng-if=\"filename\">Replace file</span></button>\n" +
-    "  <a ng-href=\"{{ filename  }}\" target=\"_blank\" class=\"\" ng-if=\"filename\" > Stored file </a>\n" +
-    "  <div class=\"progress progress-striped\" ng-class=\"{active: uploading}\" ng-show=\"attempt\" style=\"margin-top: 10px\">\n" +
-    "    <div class=\"bar\" style=\"width: {{ progress }}%;\" ng-class=\"barClass()\"></div>\n" +
-    "    </div>\n" +
-    "  <input type=\"file\" style=\"display: none\"/>\n" +
-    "</div>"
+    "  <button class=\"btn btn-primary\" type=\"button\">\n" +
+    "    <span ng-if=\"!filename\">Choose file</span>\n" +
+    "    <span ng-if=\"filename\">Replace file</span>\n" +
+    "  </button>\n" +
+    "  <a ng-href=\"{{ filename }}\" target=\"_blank\" ng-if=\"filename\">Stored file</a>\n" +
+    "  <div class=\"progress progress-striped\" ng-class=\"{active: uploading}\" ng-show=\"attempt\" style=\"margin-top: 10px;\">\n" +
+    "    <div class=\"bar\" ng-class=\"{'bar-success': isUploadSuccessful()}\" style=\"width: {{ progress }}%;\"></div>\n" +
+    "  </div>\n" +
+    "  <input type=\"file\" class=\"hidden\"/>\n" +
+    "</div>\n"
   );
 
 
   $templateCache.put('theme/bootstrap3.html',
     "<div class=\"upload-wrap\">\n" +
-    "  <button class=\"btn btn-primary\" type=\"button\"><span ng-if=\"!filename\">Choose file</span><span ng-if=\"filename\">Replace file</span></button>\n" +
-    "  <a ng-href=\"{{ filename }}\" target=\"_blank\" class=\"\" ng-if=\"filename\" > Stored file </a>\n" +
-    "  <div class=\"progress\">\n" +
-    "    <div class=\"progress-bar progress-bar-striped\" ng-class=\"{active: uploading}\" role=\"progressbar\" aria-valuemin=\"0\" aria-valuemax=\"100\" style=\"width: {{ progress }}%; margin-top: 10px\" ng-class=\"barClass()\">\n" +
+    "  <button class=\"btn btn-primary\" type=\"button\">\n" +
+    "    <span ng-if=\"!filename\">Choose file</span>\n" +
+    "    <span ng-if=\"filename\">Replace file</span>\n" +
+    "  </button>\n" +
+    "  <a ng-href=\"{{ filename }}\" target=\"_blank\" ng-if=\"filename\">Stored file</a>\n" +
+    "  <div class=\"progress\" style=\"margin-top: 10px;\" ng-show=\"attempt\">\n" +
+    "    <div class=\"progress-bar progress-bar-striped\" ng-class=\"{active: uploading, 'bar-success': isUploadSuccessful()}\" role=\"progressbar\" aria-valuemin=\"0\" aria-valuemax=\"100\" style=\"width: {{ progress }}%;\">\n" +
     "      <span class=\"sr-only\">{{progress}}% Complete</span>\n" +
     "    </div>\n" +
     "  </div>\n" +
-    "  <input type=\"file\" style=\"display: none\"/>\n" +
-    "</div>"
+    "  <input type=\"file\" class=\"hidden\"/>\n" +
+    "</div>\n"
   );
 
 }]);
